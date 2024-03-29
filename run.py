@@ -11,7 +11,9 @@ from sklearn.preprocessing import StandardScaler, normalize
 
 
 LR_DIMENSIONS = (28*28, 10)
-NN_LAYER_DIMENSIONS = (28*28, 500, 256, 10)
+NN_LAYER_DIMENSIONS = (28*28, 10000, 10)
+eta = 0.1
+epochs = 10
 TEST_WITH_LR = False
 NORMALIZE_INPUT = True
 
@@ -34,6 +36,7 @@ def main():
         scaler = StandardScaler()
         scaler.fit(X_train)
         X_train = scaler.transform(X_train)
+        #scaler.fit(X_test)
         X_test = scaler.transform(X_test)
 
 
@@ -43,7 +46,7 @@ def main():
     Y_train = convert_to_vector(y_train, num_classes)
     Y_test = convert_to_vector(y_test, num_classes)
     
-    model = LR(LR_DIMENSIONS[0], LR_DIMENSIONS[1]) if TEST_WITH_LR else NN(NN_LAYER_DIMENSIONS)
+    model = LR(LR_DIMENSIONS[0], LR_DIMENSIONS[1]) if TEST_WITH_LR else NN(NN_LAYER_DIMENSIONS, eta, epochs)
 
     # For running dataset using batches uncomment the lines below
     # batch_size = 2000

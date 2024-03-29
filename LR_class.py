@@ -9,7 +9,7 @@ import os
 TPB = 16 #calculated from the input size .. the value need to be predefined for CUDA multiplication 
 BLOCK_SIZE = 256 # for some reason, the code fails for > 256 values .. dont know why
 IS_TEST = False
-IS_CPU = False
+IS_CPU = True
 IS_NUMBA_ENABLE_CUDASIM = os.getenv('NUMBA_ENABLE_CUDASIM', False)
 if IS_NUMBA_ENABLE_CUDASIM:
     IS_TEST = True
@@ -40,21 +40,23 @@ class LR():
         self.min_theta_transpose = None
 
         self.activation_function = activation_function
-
-        self.grad_transpose = np.zeros([self.input_dimension_count + 1, self.output_dimension_count])
-        self.grad_transpose_device =  cuda.to_device(self.grad_transpose)
         
         print ("LR initialized with ", self.input_dimension_count,"x",self.output_dimension_count, "activation function ", activation_function, "theta_choice ", theta_choice)
         
-    def init_after_data(self, data_size):
+    def init_predictions(self, data_size):
         self.predictions = np.zeros([data_size, self.output_dimension_count])
         if not self.is_last_layer:
             self.predictions = np.c_[self.predictions, np.ones(data_size)]
             
         self.predictions_device = cuda.to_device(self.predictions)
-        
-        self.loss = np.zeros([data_size, self.output_dimension_count])
-        self.loss_device = cuda.to_device(self.loss)
+    
+    def init_loss(self, data_size):
+        loss = np.zeros([data_size, self.output_dimension_count])
+        return cuda.to_device(loss)
+
+    def init_grad_transpose(self):
+        grad_transpose = np.zeros([self.input_dimension_count + 1, self.output_dimension_count])
+        return [grad_transpose, cuda.to_device(grad_transpose)]
 
     def train_batch_wise(self, X, Y, batch_size):
         data_size = len(X)
@@ -77,7 +79,7 @@ class LR():
         X_transpose_device = cuda.to_device(np.transpose(X))
         Y_device = cuda.to_device(Y)
         
-        self.init_after_data(data_size)
+        self.init_predictions(data_size)
         
         #print("Elapsed time transferring data to cuda: ", time.time() - start_time)
     
@@ -88,11 +90,12 @@ class LR():
             self.apply_activation_function()
             self.predictions = self.apply_activation_function_cpu(self.predictions, self.predictions_device)
             #predictions_device = cuda.to_device(predictions)
+            
+            loss_device = self.init_loss(data_size)
+            self.calculate_loss(Y_device, loss_device)
+            self.loss = self.calculate_loss_cpu(self.predictions, Y, loss_device)
 
-            self.calculate_loss(Y_device)
-            self.loss = self.calculate_loss_cpu(self.predictions, Y, self.loss_device)
-
-            loss_device_host = self.loss_device.copy_to_host()
+            loss_device_host = loss_device.copy_to_host()
             total_loss = np.sum(np.abs(loss_device_host))
             #print("total loss device ", np.sum(np.abs(loss_device_host)))
             if IS_CPU == True: print("total loss cpu ", np.sum(np.abs(self.loss)))
@@ -103,10 +106,11 @@ class LR():
                 training_accuracy = 100 - ((self.min_total_loss/2) / data_size * 100)
                 print("max training accuracy ", training_accuracy, " at iteration ", i)
 
-            self.backward(X_transpose_device)
-            self.grad_transpose = self.backward_cpu(self.loss, np.transpose(X), self.grad_transpose, self.grad_transpose_device )
+            grad_transpose, grad_transpose_device = self.init_grad_transpose()
+            self.backward(X_transpose_device, loss_device, grad_transpose_device)
+            self.grad_transpose = self.backward_cpu(self.loss, np.transpose(X), grad_transpose, grad_transpose_device )
         
-            self.step(self.eta/data_size)
+            self.step(self.eta/data_size, grad_transpose_device)
             self.step_cpu(self.grad_transpose)
 
             # if IS_TEST and i == 1 :
@@ -126,7 +130,7 @@ class LR():
         X_device = cuda.to_device(X)
         
         self.theta_transpose_device = cuda.to_device(self.min_theta_transpose)
-        self.init_after_data(data_size)
+        self.init_predictions(data_size)
         self.forward(X_device)
         self.apply_activation_function()
         Y_hat = self.predictions_device.copy_to_host()
@@ -189,9 +193,9 @@ class LR():
         return data
 
 
-    def calculate_loss(self, Y_device):
-        self._copy_array(self.loss_device, self.predictions_device)
-        self._matsubtract(self.loss_device, Y_device)  
+    def calculate_loss(self, Y_device, loss_device):
+        self._copy_array(loss_device, self.predictions_device)
+        self._matsubtract(loss_device, Y_device)  
     
     def calculate_loss_cpu(self, predictions, Y, loss_device):
         if IS_CPU == False: return 
@@ -200,8 +204,8 @@ class LR():
         dump_device_variable("loss ", loss, loss_device)
         return loss
 
-    def backward(self,  X_transpose_device):
-        self._matmul(X_transpose_device, self.loss_device, self.grad_transpose_device)
+    def backward(self,  X_transpose_device, loss_device, grad_transpose_device):
+        self._matmul(X_transpose_device, loss_device, grad_transpose_device)
 
     def backward_cpu(self, loss, X_transpose, grad_transpose, grad_transpose_device):
         if IS_CPU == False: return 
@@ -210,10 +214,10 @@ class LR():
         dump_device_variable("grad ", grad_transpose, grad_transpose_device )
         return grad_transpose
 
-    def step(self, eta):
+    def step(self, eta, grad_transpose_device):
         #doe_L_by_doe_theta_device = our_cuda_transpose(doe_L_by_doe_theta_transpose_device)
-        self._matmulWithConstant(self.grad_transpose_device, eta)
-        self._matsubtract(self.theta_transpose_device, self.grad_transpose_device)
+        self._matmulWithConstant(grad_transpose_device, eta)
+        self._matsubtract(self.theta_transpose_device, grad_transpose_device)
 
         #self.theta_transpose_device = None
         #self.theta_transpose_device = our_cuda_transpose(self.theta_device)

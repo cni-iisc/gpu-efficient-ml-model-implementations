@@ -53,7 +53,7 @@ $G_{L-k} = (L_{L-k})^T \times a_{L-k-1}$
 
 2. Update weights of the layer from the gradient 
 
-$W_{L-k-updated} = W_{L-k} - 1/m*(eta*G_{L-k})$
+$W^{updated}_{L-k} = W_{L-k} - 1/m*(eta*G_{L-k})$
 
 3. Calculate loss for previous layer from current layer loss. Remember to do this step *before* updating weights of the current layer.  
 

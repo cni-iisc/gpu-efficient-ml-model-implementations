@@ -2,6 +2,7 @@ from LR_class import LR, our_cuda_transpose
 import numpy as np
 from numba import cuda
 import array
+from time import time
 
 class NN():
     min_total_loss = float('inf')
@@ -32,11 +33,13 @@ class NN():
         
         boosted_iteration = 0
         training_accuracy_array = []
+        
+        start_time = time()
 
         for iteration in range(self.epochs):
 
             for lr in self.LRs:
-                lr.init_after_data(len(X))
+                lr.init_predictions(len(X))
             
             # forward pass
             input = X_device
@@ -46,34 +49,29 @@ class NN():
                 input = lr.predictions_device # used as input for next iteration
 
             # backward pass
+            prev_loss_device = None
             for i, lr in reversed(list(enumerate(self.LRs))):
-
+                
+                loss_device = lr.init_loss(data_size)
                 if i == len(self.LRs) - 1:
-                    lr.calculate_loss(Y_device)
-                    # loss_device_host = lr.loss_device.copy_to_host()
-                    # loss = np.sum(np.abs(loss_device_host))
-                    # training_accuracy = ((data_size - loss/2) / data_size) * 100
-                    # print("training accuracy ", training_accuracy , "% at iteration ", iteration)
-                    
-                    # if len(training_accuracy_array) > 5:
-                    #     delta = training_accuracy - training_accuracy_array[iteration - 5]
-                    #     if training_accuracy > 80 and delta > 0 and delta < 1 and iteration - boosted_iteration > 5:
-                    #         print("boosting\n")
-                    #         self.eta *= 1.1
-                    #         boosted_iteration = iteration
-                    
-                    # training_accuracy_array.append(training_accuracy)
-
-                # loss for previous LR .. calculate this before updating theta of current LR 
-                if i > 0:
-                    lr._matmul(lr.loss_device, our_cuda_transpose(lr.theta_transpose_device), self.LRs[i-1].loss_device)
+                    lr.calculate_loss(Y_device, loss_device)
+                else:
+                    lr_ahead = self.LRs[i + 1]
+                    lr._matmul(prev_loss_device, our_cuda_transpose(lr_ahead.theta_transpose_device), loss_device)
+                    #get_zero_count_percent(self.LRs[i-1].loss_device)
 
                 input = self.LRs[i-1].predictions_device if i > 0 else X_device
-                lr.backward(our_cuda_transpose(input)) #calculate grad_tranpose
-                lr.step(self.eta/data_size) # update theta_transpose    
+                _ , grad_transpose_device = lr.init_grad_transpose()
+
+                lr.backward(our_cuda_transpose(input), loss_device, grad_transpose_device) #calculate grad_tranpose
+                lr.step(self.eta/data_size, grad_transpose_device) # update theta_transpose  
+
+                prev_loss_device = loss_device   
 
             test_accuracy = self.test(X_test, Y_test) 
-            print("test accuracy ", test_accuracy, "in iteration ", iteration)
+            end_time = time()
+            total_time = end_time - start_time
+            print(f"Epoch {iteration+1}: Accuracy = {test_accuracy:.2f}% Time = {total_time:.2f}s Time per epoch = {total_time/(iteration+1):.2f}s")
 
     def test(self, X, Y):
         data_size = len(X)
@@ -83,7 +81,7 @@ class NN():
         #self.theta_transpose_device = cuda.to_device(self.min_theta_transpose)
         input = X_device
         for lr in self.LRs:
-            lr.init_after_data(data_size)
+            lr.init_predictions(data_size)
             lr.forward(input)
             lr.apply_activation_function()
             input = lr.predictions_device
@@ -103,3 +101,26 @@ class NN():
         #print("Accuracy ", accuracy)   
                 
                     
+def get_zero_count_percent(data_device):
+    data = data_device.copy_to_host()
+    size = np.size(data)
+    zero_count_percent = (size - np.count_nonzero(data))/size * 100
+    print("zero count", zero_count_percent, "%")
+    return [zero_count_percent, data]
+    
+def compress_sparse_matrix(matrix_device): 
+    zero_count_percent, data = get_zero_count_percent(matrix_device)
+    if zero_count_percent < 50:
+        return [None, None]
+    sparse_matrix_row_wise =[]
+    for row in data:
+        sparse_matrix_row_wise.append(np.nonzero(row))
+    
+    sparse_matrix_col_wise = []
+    for row in np.transpose(data):
+        sparse_matrix_col_wise.append(np.nonzero(row))
+    sparse_matrix_col_wise = np.transpose(sparse_matrix_col_wise)
+    
+    matrix_device = None #hopefully it will be garbage collected 
+    return [sparse_matrix_row_wise, sparse_matrix_col_wise]
+    
